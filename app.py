@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, url_for, redirect
 from extensions import db, jwt
-from models import User, Receipt  # Add Receipt here
+from models import User, Receipt 
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from config import Config
 from authlib.integrations.flask_client import OAuth
@@ -8,7 +8,6 @@ import os
 import io
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-import parse_model 
 import mimetypes 
 from PIL import Image
 from parse_model import extract_receipt_data
@@ -106,7 +105,7 @@ def process_receipt():
         return jsonify({
             'success': True,
             'data': result,
-            'receipt_id': receipt.id  # Return the database ID for reference
+            'receipt_id': receipt.id 
         }), 200
         
     except Exception as e:
@@ -116,7 +115,7 @@ def process_receipt():
             'error': 'Internal Server Error during image processing.'
         }), 500
     
-    @app.route('/api/user/receipts', methods=['GET'])
+@app.route('/api/user/receipts', methods=['GET'])
 @jwt_required()
 def get_user_receipts():
     """Get all receipts for the current user"""
