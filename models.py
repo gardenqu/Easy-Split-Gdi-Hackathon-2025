@@ -77,3 +77,38 @@ class Receipt(db.Model):
 
     def __repr__(self):
         return f'<Receipt {self.id} - {self.store_name}>'
+    
+
+class BillSplit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    
+    # Split configuration
+    receipt_data = db.Column(db.JSON, nullable=True)
+    # List of participant names
+    participants = db.Column(db.JSON, nullable=True)  
+    split_method = db.Column(db.String(50), default='itemized')  
+    tax_rate = db.Column(db.Float, default=0.0)
+    tip_percentage = db.Column(db.Float, default=0.0)
+    
+    # Split results
+    split_result = db.Column(db.JSON, nullable=True)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'receipt_data': self.receipt_data,
+            'participants': self.participants,
+            'split_method': self.split_method,
+            'tax_rate': self.tax_rate,
+            'tip_percentage': self.tip_percentage,
+            'split_result': self.split_result,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+    
+    def __repr__(self):
+        return f'<BillSplit {self.id}>'

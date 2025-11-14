@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, url_for, redirect
 from extensions import db, jwt
-from models import User, Receipt 
+from models import User, Receipt, BillSplit
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from config import Config
 from authlib.integrations.flask_client import OAuth
@@ -50,6 +50,125 @@ google = oauth.register(
 
 
 # --------- Routes ---------
+
+@app.route('/api/split-bill', methods=['POST'])
+@jwt_required()
+def split_bill():
+    """Split a bill among participants using receipt data"""
+    data = request.get_json()
+    
+    receipt_data = data.get('receipt_data')
+    participants = data.get('participants', [])
+    tax_rate = data.get('tax_rate')
+    tip_percentage = data.get('tip_percentage')
+    split_method = data.get('split_method', 'itemized')  # 'itemized' or 'even'
+    
+    if not receipt_data:
+        return jsonify({'error': 'Receipt data is required'}), 400
+    
+    if not participants:
+        return jsonify({'error': 'At least one participant is required'}), 400
+    
+    try:
+        if split_method == 'even':
+            # Simple even split using total from receipt
+            total_amount = float(receipt_data.get('total', 0)) if receipt_data.get('total') else 0
+            from bill_splitting_logic import calculate_even_split
+            result = calculate_even_split(total_amount, len(participants))
+        else:
+            # Itemized split using receipt items
+            from bill_splitting_logic import split_receipt_items
+            result = split_receipt_items(receipt_data, participants, tax_rate, tip_percentage)
+        
+        # Save the split result to database
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        
+        # Create a bill split record
+        bill_split = BillSplit(
+            user_id=user.id,
+            receipt_data=receipt_data,
+            participants=participants,
+            split_result=result,
+            split_method=split_method,
+            tax_rate=tax_rate,
+            tip_percentage=tip_percentage
+        )
+        
+        db.session.add(bill_split)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'split_result': result,
+            'bill_split_id': bill_split.id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': f'Error splitting bill: {str(e)}'
+        }), 500
+
+
+@app.route('/api/split-evenly', methods=['POST'])
+@jwt_required()
+def split_evenly():
+    """Simple even split calculation for any total amount"""
+    data = request.get_json()
+    
+    total_amount = data.get('total_amount')
+    num_people = data.get('num_people')
+    
+    if not total_amount or not num_people:
+        return jsonify({'error': 'Total amount and number of people are required'}), 400
+    
+    try:
+        from bill_splitting_logic import calculate_even_split
+        result = calculate_even_split(float(total_amount), int(num_people))
+        
+        return jsonify({
+            'success': True,
+            'split_result': result
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Error calculating split: {str(e)}'
+        }), 500
+
+
+@app.route('/api/bill-splits', methods=['GET'])
+@jwt_required()
+def get_bill_splits():
+    """Get all bill splits for the current user"""
+    user_id = get_jwt_identity()
+    
+    bill_splits = BillSplit.query.filter_by(user_id=user_id).order_by(BillSplit.created_at.desc()).all()
+    
+    return jsonify({
+        'success': True,
+        'bill_splits': [split.to_dict() for split in bill_splits]
+    }), 200
+
+
+@app.route('/api/bill-splits/<int:split_id>', methods=['GET'])
+@jwt_required()
+def get_bill_split(split_id):
+    """Get a specific bill split by ID"""
+    user_id = get_jwt_identity()
+    
+    bill_split = BillSplit.query.filter_by(id=split_id, user_id=user_id).first()
+    
+    if not bill_split:
+        return jsonify({'error': 'Bill split not found'}), 404
+    
+    return jsonify({
+        'success': True,
+        'bill_split': bill_split.to_dict()
+    }), 200
 
 ALLOWED_MIMETYPES = ['image/jpeg', 'image/png', 'image/webp']
 
@@ -114,20 +233,6 @@ def process_receipt():
             'success': False,
             'error': 'Internal Server Error during image processing.'
         }), 500
-    
-@app.route('/api/user/receipts', methods=['GET'])
-@jwt_required()
-def get_user_receipts():
-    """Get all receipts for the current user"""
-    user_id = get_jwt_identity()
-    
-    receipts = Receipt.query.filter_by(user_id=user_id).order_by(Receipt.created_at.desc()).all()
-    
-    return jsonify({
-        'success': True,
-        'receipts': [receipt.to_dict() for receipt in receipts]
-    }), 200
-
 
 @app.route('/api/user/receipts', methods=['GET'])
 @jwt_required()
