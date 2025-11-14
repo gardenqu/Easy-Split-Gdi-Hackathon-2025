@@ -1,8 +1,12 @@
+import os
 import pytest
 from app import app, db
 from models import User
 from flask_jwt_extended import decode_token
 from unittest.mock import patch
+
+# Set testing environment before importing app
+os.environ['FLASK_ENV'] = 'testing'
 
 @pytest.fixture
 def client():

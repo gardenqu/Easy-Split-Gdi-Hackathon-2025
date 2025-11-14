@@ -5,9 +5,13 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from config import Config
 from authlib.integrations.flask_client import OAuth
 import os
+import io
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 import parse_model 
+import mimetypes 
+from PIL import Image
+from parse_model import extract_receipt_data
 
 
 
@@ -15,6 +19,7 @@ import parse_model
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads' 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+app.config.from_object(Config)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -46,44 +51,42 @@ google = oauth.register(
 
 # --------- Routes ---------
 
-@app.route('/')
-def index():
-    return f"LayoutLMv3 Receipt Parser API is running. Model on {parse_model.DEVICE}."
+ALLOWED_MIMETYPES = ['image/jpeg', 'image/png', 'image/webp']
 
-@app.route('/predict', methods=['POST'])
-def predict_api():
-    """API endpoint for receipt image processing."""
+@app.route('/api/process-receipt', methods=['POST'])
+def process_receipt():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image file provided'}), 400
     
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
+    file = request.files['image']
     
-    file = request.files['file']
-    filename = secure_filename(file.filename)
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+        
+    mime_type, _ = mimetypes.guess_type(file.filename)
     
-    if file.filename == '' or not allowed_file(filename):
-        return jsonify({"error": "No selected file or file type not allowed"}), 400
-    
-    # Use a secure and temporary file path
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    
+    if mime_type not in ALLOWED_MIMETYPES:
+        return jsonify({'error': f'Unsupported file type: {mime_type}. Must be an image.'}), 415
+
     try:
-        file.save(filepath)
+        # Save the uploaded file temporarily
+        image_bytes = file.read()
+        temp_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        temp_image.save('temp_receipt.jpg')
         
-        # CALL THE MODEL LOGIC FROM THE SEPARATE FILE
-        structured_output = parse_model.predict_receipt_from_image_structured(filepath)
+        # Use your existing extract_receipt_data function
+        result = extract_receipt_data('temp_receipt.jpg')
         
-        # Clean up the temporary file
-        os.remove(filepath)
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
         
-        return jsonify({"status": "success", "data": structured_output}), 200
-
     except Exception as e:
-        print(f"Prediction Error: {e}")
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            
-        return jsonify({"error": f"Internal server error during processing: {e}"}), 500
-
+        return jsonify({
+            'success': False,
+            'error': 'Internal Server Error during image processing.'
+        }), 500
 # --- Google OAuth Endpoints ---
 
 # Initiate Google Login

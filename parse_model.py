@@ -1,124 +1,107 @@
-import os
-import torch
 import pytesseract
 from PIL import Image
-from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
+import re
 
-# --- Configuration (Must match training configuration) ---
-MODEL_DIR = "./final_layoutlmv3_model"
-LABELS = ['O', 'B-SHOP', 'I-SHOP', 'B-TOTAL', 'I-TOTAL', 'B-DATE', 'I-DATE', 'B-ITEM', 'I-ITEM']
-ID2LABEL = {i: label for i, label in enumerate(LABELS)}
-LABEL2ID = {label: i for i, label in enumerate(LABELS)}
-
-# --- Global Model and Processor Variables ---
-MODEL = None
-PROCESSOR = None
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-def initialize_model():
-    """Loads the model and processor once."""
-    global MODEL, PROCESSOR, DEVICE
-    
-    if MODEL is not None:
-        return # Model is already loaded
-
-    try:
-        print("Loading LayoutLMv3 model and processor...")
-        PROCESSOR = LayoutLMv3Processor.from_pretrained(MODEL_DIR)
-        MODEL = LayoutLMv3ForTokenClassification.from_pretrained(
-            MODEL_DIR,
-            num_labels=len(LABELS),
-            id2label=ID2LABEL,
-            label2id=LABEL2ID
-        )
-        MODEL.eval()
-        MODEL.to(DEVICE)
-        print(f"Model successfully loaded on {DEVICE}.")
-    except Exception as e:
-        print(f"ERROR: Could not load the model from {MODEL_DIR}. Details: {e}")
-        MODEL = None
-        PROCESSOR = None
-
-# --- Core Prediction Logic ---
-
-def predict_receipt_from_image_structured(image_path: str) -> dict:
+def extract_receipt_data(image_path):
     """
-    Parses a receipt image using OCR + LayoutLMv3.
-    Raises an exception if the model is not initialized.
+    Complete receipt processing: OCR + parsing
+    Returns structured JSON data from receipt image
     """
-    
-    if MODEL is None or PROCESSOR is None:
-        raise Exception("Model not initialized. Call initialize_model() first and check logs.")
+    # Step 1: Extract text from image
+    def quick_receipt_read(image_path):
+        image = Image.open(image_path)
+        text = pytesseract.image_to_string(image)
+        return text
 
-    image = Image.open(image_path).convert("RGB")
-    ocr_data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-
-    words, boxes = [], []
-    width, height = image.size
-
-    # 1. OCR and Normalization
-    for i in range(len(ocr_data["text"])):
-        if ocr_data["text"][i].strip() != "":
-            words.append(ocr_data["text"][i])
-            x, y, w, h = ocr_data["left"][i], ocr_data["top"][i], ocr_data["width"][i], ocr_data["height"][i]
-            boxes.append([
-                int(1000 * x / width), int(1000 * y / height),
-                int(1000 * (x + w) / width), int(1000 * (y + h) / height)
-            ])
-
-    # 2. Encoding and Inference
-    encoding = PROCESSOR(
-        image, words, boxes=boxes,
-        return_tensors="pt", truncation=True, padding="max_length", max_length=512
-    )
-
-    for k, v in encoding.items():
-        if isinstance(v, torch.Tensor):
-            encoding[k] = v.to(DEVICE)
-
-    with torch.no_grad():
-        outputs = MODEL(**encoding)
-        predictions = outputs.logits.argmax(-1).squeeze().tolist()
-        labels_list = [ID2LABEL[p] for p in predictions]
-
-    # 3. Post-processing logic (simplified for brevity, ensuring it matches your original logic)
-    structured_data = {"store_name": "", "items": [], "total_amount": "", "date": ""}
-    current_entity = {"tag": None, "text": []}
-    tag_map = {"SHOP": "store_name", "ITEM": "items", "TOTAL": "total_amount", "DATE": "date"}
-
-    for word, label in zip(words, labels_list[:len(words)]):
-        primary_tag = label.split("-")[-1] if "-" in label else label
+    # Step 2: Parse text into structured data
+    def parse_receipt_text(text):
+        lines = text.split('\n')
+        parsed_data = {
+            'store_name': '',
+            'items': [],
+            'subtotal': '',
+            'total': '',
+            'tax': '',
+            'date': '',
+            'cashier': ''
+        }
         
-        # Logic to handle O, B-, and I- tags and aggregate text...
-        if label.startswith("B-") or (label != "O" and current_entity["tag"] != primary_tag):
-            # Finalize previous entity
-            if current_entity["tag"]:
-                key = tag_map.get(current_entity["tag"])
-                text = " ".join(current_entity["text"])
-                if key == "items": structured_data[key].append(text)
-                elif key is not None: structured_data[key] = text
-            # Start new entity
-            current_entity = {"tag": primary_tag, "text": [word]}
-        elif label.startswith("I-") or (label != "O" and current_entity["tag"] == primary_tag):
-             current_entity["text"].append(word)
-        elif label == "O":
-             # Finalize entity on 'O' transition
-             if current_entity["tag"]:
-                key = tag_map.get(current_entity["tag"])
-                text = " ".join(current_entity["text"])
-                if key == "items": structured_data[key].append(text)
-                elif key is not None: structured_data[key] = text
-                current_entity = {"tag": None, "text": []}
+        # Clean the text first
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and len(line) > 1:  # Remove empty/short lines
+                cleaned_lines.append(line)
+        
+        # Extract store name (look for store names in first few lines)
+        store_keywords = ['STORE', 'MARKET', 'SHOP', 'GROCERY', 'SUPER', 'MART', 'FOOD', 'SAVE']
+        for i, line in enumerate(cleaned_lines[:5]):
+            # Look for lines that are likely store names (not prices, not too short)
+            if (len(line) > 2 and len(line) < 50 and 
+                not re.search(r'\d+\.\d{2}', line) and  # No prices
+                any(keyword in line.upper() for keyword in store_keywords) or
+                (re.search(r'[A-Z][a-z]+', line) and not re.search(r'\d', line))):  # Proper capitalization, no numbers
+                parsed_data['store_name'] = line
+                break
+        
+        # Extract total (look for TOTAL line)
+        for i, line in enumerate(cleaned_lines):
+            if 'TOTAL' in line.upper():
+                # Find amounts in the TOTAL line
+                amounts = re.findall(r'[0-9]+\.[0-9]{2}|[0-9]+', line)
+                if amounts:
+                    parsed_data['total'] = amounts[-1]
+        
+        # Extract subtotal
+        for i, line in enumerate(cleaned_lines):
+            if 'SUBTOTAL' in line.upper():
+                amounts = re.findall(r'[0-9]+\.[0-9]{2}|[0-9]+', line)
+                if amounts:
+                    parsed_data['subtotal'] = amounts[-1]
+        
+        # Extract items - be more selective
+        for i, line in enumerate(cleaned_lines):
+            line_upper = line.upper()
+            
+            # Skip lines that are clearly not items
+            skip_words = ['TOTAL', 'SUBTOTAL', 'TAX', 'CASH', 'CHANGE', 'ITEMS SOLD', 'DISCOUNT', 'RP', 'T#', 'OPEN', 'HOURS']
+            if any(skip_word in line_upper for skip_word in skip_words):
+                continue
+            
+            # Look for actual product names (not random text)
+            if (re.search(r'[A-Za-z]{3,}', line) and  # At least 3 letters
+                not re.search(r'[0-9]{5,}', line) and  # Not long number sequences
+                len(line) > 3 and len(line) < 50):     # Reasonable length
+                
+                # Check if this line or next line has a price
+                prices = re.findall(r'[0-9]+\.[0-9]{2}', line)
+                if prices and float(prices[0]) < 100:  # Reasonable price
+                    item_name = re.sub(r'[0-9]+\.[0-9]{2}', '', line).strip()
+                    if len(item_name) > 2:  # Valid item name
+                        parsed_data['items'].append({
+                            'name': item_name,
+                            'price': prices[0]
+                        })
+                else:
+                    # Check next line for price
+                    if i + 1 < len(cleaned_lines):
+                        next_prices = re.findall(r'[0-9]+\.[0-9]{2}', cleaned_lines[i + 1])
+                        if next_prices and float(next_prices[0]) < 100:
+                            parsed_data['items'].append({
+                                'name': line,
+                                'price': next_prices[0]
+                            })
+        
+        # Extract tax
+        for i, line in enumerate(cleaned_lines):
+            if 'TAX' in line.upper():
+                amounts = re.findall(r'[0-9]+\.[0-9]{2}|[0-9]+', line)
+                if amounts:
+                    parsed_data['tax'] = amounts[-1]
+        
+        return parsed_data
 
-
-    # Finalize the last entity at end of loop
-    if current_entity["tag"]:
-        key = tag_map.get(current_entity["tag"])
-        text = " ".join(current_entity["text"])
-        if key == "items": structured_data[key].append(text)
-        elif key is not None: structured_data[key] = text
-
-    return structured_data
-
-# The model will be initialized when the app starts
-initialize_model()
+    # Execute the pipeline
+    text = quick_receipt_read(image_path)
+    result = parse_receipt_text(text)
+    return result
