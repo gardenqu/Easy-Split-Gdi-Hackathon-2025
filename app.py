@@ -1,12 +1,29 @@
 from flask import Flask, request, jsonify, url_for, redirect
 from extensions import db, jwt
-from models import User 
+from models import User, Receipt 
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from config import Config
 from authlib.integrations.flask_client import OAuth
+import os
+import io
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
+import mimetypes 
+from PIL import Image
+from parse_model import extract_receipt_data
+from datetime import datetime  
+
+
+
 
 app = Flask(__name__)
+UPLOAD_FOLDER = 'uploads' 
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 app.config.from_object(Config)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
 
 # Initialize extensions
 db.init_app(app)
@@ -33,6 +50,114 @@ google = oauth.register(
 
 
 # --------- Routes ---------
+
+ALLOWED_MIMETYPES = ['image/jpeg', 'image/png', 'image/webp']
+
+@app.route('/api/process-receipt', methods=['POST'])
+@jwt_required()
+def process_receipt():
+    # Get the current user
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image file provided'}), 400
+    
+    file = request.files['image']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+        
+    mime_type, _ = mimetypes.guess_type(file.filename)
+    
+    if mime_type not in ALLOWED_MIMETYPES:
+        return jsonify({'error': f'Unsupported file type: {mime_type}. Must be an image.'}), 415
+
+    try:
+        # Save the uploaded file temporarily
+        image_bytes = file.read()
+        temp_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        
+        # Generate unique filename for the image
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        filename = f"receipt_{user_id}_{timestamp}.jpg"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        temp_image.save(filepath)
+        
+        # Use your existing extract_receipt_data function
+        result = extract_receipt_data(filepath)
+        
+        # Save receipt data to database
+        receipt = Receipt(
+            user_id=user.id,
+            store_name=result.get('store_name', ''),
+            total_amount=float(result.get('total', 0)) if result.get('total') else None,
+            subtotal_amount=float(result.get('subtotal', 0)) if result.get('subtotal') else None,
+            tax_amount=float(result.get('tax', 0)) if result.get('tax') else None,
+            receipt_date=result.get('date', ''),
+            raw_data=result,  # Store the complete parsed data
+            image_path=filepath  # Store the path to the saved image
+        )
+        
+        db.session.add(receipt)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'data': result,
+            'receipt_id': receipt.id 
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': 'Internal Server Error during image processing.'
+        }), 500
+    
+@app.route('/api/user/receipts', methods=['GET'])
+@jwt_required()
+def get_user_receipts():
+    """Get all receipts for the current user"""
+    user_id = get_jwt_identity()
+    
+    receipts = Receipt.query.filter_by(user_id=user_id).order_by(Receipt.created_at.desc()).all()
+    
+    return jsonify({
+        'success': True,
+        'receipts': [receipt.to_dict() for receipt in receipts]
+    }), 200
+
+
+@app.route('/api/user/receipts', methods=['GET'])
+@jwt_required()
+def get_user_receipts():
+    """Get all receipts for the current user"""
+    user_id = get_jwt_identity()
+    
+    receipts = Receipt.query.filter_by(user_id=user_id).order_by(Receipt.created_at.desc()).all()
+    
+    return jsonify({
+        'success': True,
+        'receipts': [receipt.to_dict() for receipt in receipts]
+    }), 200
+
+@app.route('/api/user/receipts/<int:receipt_id>', methods=['GET'])
+@jwt_required()
+def get_receipt(receipt_id):
+    """Get a specific receipt by ID"""
+    user_id = get_jwt_identity()
+    
+    receipt = Receipt.query.filter_by(id=receipt_id, user_id=user_id).first()
+    
+    if not receipt:
+        return jsonify({'error': 'Receipt not found'}), 404
+    
+    return jsonify({
+        'success': True,
+        'receipt': receipt.to_dict()
+    }), 200
+
 
 # --- Google OAuth Endpoints ---
 
@@ -112,7 +237,7 @@ def register():
         username=data["username"],
         email=data["email"],
         phone_number=data.get("phone_number"),
-        # ✨ NEW: Add name and birthdate fields
+    
         name=data.get("name"),
         birthdate=birthdate_obj
     )
@@ -168,4 +293,4 @@ def me():
 
 # Run the app
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
