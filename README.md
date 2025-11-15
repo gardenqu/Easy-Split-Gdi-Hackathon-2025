@@ -20,7 +20,9 @@
 
 ---
 ## App Demo
-<img src="./static/img/app.gif" width="300" height="450" />
+<p align="center">
+<img src="./static/img/app.gif" width="200" height="350" />
+</p>
 ---
 
 # **Project Overview**
