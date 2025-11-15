@@ -19,10 +19,12 @@
 </div>
 
 ---
+
 ## App Demo
 <p align="center">
 <img src="./static/img/app.gif" width="260" />
 </p>
+
 ---
 
 # **Project Overview**
