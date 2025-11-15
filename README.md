@@ -20,7 +20,7 @@
 
 ---
 ## App Demo
-![Demo](./static/img/app.gif)
+<img src="./static/img/app.gif" width="300" height="450" />
 ---
 
 # **Project Overview**
