@@ -1,5 +1,5 @@
 # **Easy-Split**  
-### _AI-Powered Receipt Scanner • Smart Bill Splitting
+### AI-Powered Receipt Scanner • Smart Bill Splitting
 
 <div align="center">
 
