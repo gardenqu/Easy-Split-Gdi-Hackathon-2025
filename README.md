@@ -21,7 +21,7 @@
 ---
 ## App Demo
 <p align="center">
-<img src="./static/img/app.gif" width="200" height="350" />
+<img src="./static/img/app.gif" width="260" />
 </p>
 ---
 
