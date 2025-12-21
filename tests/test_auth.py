@@ -1,7 +1,7 @@
 import os
 import pytest
 from app import app, db
-from models import User
+from models import User, RefreshToken
 from flask_jwt_extended import decode_token
 from unittest.mock import patch
 
@@ -30,10 +30,14 @@ def test_register_success(client):
     }
     res = client.post("/api/auth/register", json=data)
     assert res.status_code == 201
-    assert res.json["msg"] == "User created successfully"
+    assert "user_id" in res.json
+    user = User.query.filter_by(username="testuser").first()
+    assert user is not None
+    assert user.id == res.json["user_id"]  # UUID string
+
 
 def test_register_duplicate_username(client):
-    user = User(username="testuser", email="other@example.com")
+    user = User(id="123e4567-e89b-12d3-a456-426614174000", username="testuser", email="other@example.com")
     user.set_password("password123")
     db.session.add(user)
     db.session.commit()
@@ -46,6 +50,7 @@ def test_register_duplicate_username(client):
     assert res.status_code == 400
     assert "Username already exists" in res.json["msg"]
 
+
 def test_register_invalid_birthdate(client):
     res = client.post("/api/auth/register", json={
         "username": "testuser2",
@@ -56,19 +61,26 @@ def test_register_invalid_birthdate(client):
     assert res.status_code == 400
     assert "Invalid birthdate format" in res.json["msg"]
 
+
 def test_login_success(client):
-    user = User(username="loginuser", email="login@example.com")
+    user = User(id="123e4567-e89b-12d3-a456-426614174001", username="loginuser", email="login@example.com")
     user.set_password("password123")
     db.session.add(user)
     db.session.commit()
 
     res = client.post("/api/auth/login", json={
-    "username": "loginuser",
-    "password": "password123"})
+        "username": "loginuser",
+        "password": "password123"
+    })
     assert res.status_code == 200
+    assert "access_token" in res.json
     token = res.json["access_token"]
     decoded = decode_token(token)
-    assert decoded["sub"] == str(user.id)
+    assert decoded["sub"] == user.id  # UUID string
+
+    # Check that refresh token was stored
+    refresh = RefreshToken.query.filter_by(user_id=user.id).first()
+    assert refresh is not None
 
 
 def test_login_bad_credentials(client):
@@ -79,8 +91,9 @@ def test_login_bad_credentials(client):
     assert res.status_code == 401
     assert "Bad credentials" in res.json["msg"]
 
+
 def test_me_route(client):
-    user = User(username="meuser", email="me@example.com")
+    user = User(id="123e4567-e89b-12d3-a456-426614174002", username="meuser", email="me@example.com")
     user.set_password("password123")
     db.session.add(user)
     db.session.commit()
@@ -97,18 +110,20 @@ def test_me_route(client):
     assert res.status_code == 200
     assert res.json["username"] == "meuser"
 
+
 # Mock Google OAuth for testing
 @patch("app.google.authorize_redirect")
 def test_google_login_redirect(mock_redirect, client):
-    mock_redirect.return_value = "redirected"
+    mock_redirect.return_value = b"redirected"
     res = client.get("/api/auth/google/login")
     assert res.data == b"redirected"
+
 
 @patch("app.google.authorize_access_token")
 @patch("app.google.parse_id_token")
 def test_google_auth_new_user(mock_parse, mock_token, client):
     mock_token.return_value = {"access_token": "fake-token"}
-    mock_parse.return_value = {"email": "google@example.com", "name": "Google User"}
+    mock_parse.return_value = {"email": "google@example.com", "name": "Google User", "sub": "google-uuid"}
 
     res = client.get("/api/auth/google/auth")
     assert res.status_code == 200
@@ -116,3 +131,4 @@ def test_google_auth_new_user(mock_parse, mock_token, client):
     user = User.query.filter_by(email="google@example.com").first()
     assert user is not None
     assert user.is_oauth is True
+    assert user.google_id == "google-uuid"
